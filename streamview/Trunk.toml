@@ -1,0 +1,16 @@
+[build]
+target = "index.html"
+
+[watch]
+ignore = ["target", "dist"]
+
+[serve]
+# Proxies browser calls to Leptos #[server] functions through to the Axum
+# backend (cargo run --features ssr), which must be running separately in
+# dev (`trunk serve` only serves the static wasm/js/html, it doesn't run
+# the ssr binary).
+addresses = ["127.0.0.1"]
+port = 8080
+
+[[proxy]]
+backend = "http://127.0.0.1:3000/api/"
