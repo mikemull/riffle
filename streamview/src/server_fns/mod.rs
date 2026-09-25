@@ -2,7 +2,7 @@ pub mod publish;
 pub mod query;
 
 pub use publish::{list_published_versions, publish_dataset, verify_published_version};
-pub use query::{list_sites, query_readings};
+pub use query::{list_sites, query_readings, site_metadata};
 
 #[cfg(feature = "ssr")]
 fn lake_root() -> String {
@@ -30,6 +30,7 @@ fn publish_root() -> String {
 pub fn register_all() {
     leptos::server_fn::axum::register_explicit::<query::ListSites>();
     leptos::server_fn::axum::register_explicit::<query::QueryReadings>();
+    leptos::server_fn::axum::register_explicit::<query::SiteMetadata>();
     leptos::server_fn::axum::register_explicit::<publish::PublishDataset>();
     leptos::server_fn::axum::register_explicit::<publish::ListPublishedVersions>();
     leptos::server_fn::axum::register_explicit::<publish::VerifyPublishedVersion>();

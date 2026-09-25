@@ -1,4 +1,5 @@
 pub mod client;
+pub mod combined_metadata;
 pub mod continuous;
 pub mod daily;
 pub mod model;

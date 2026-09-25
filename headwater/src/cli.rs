@@ -1,9 +1,25 @@
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "headwater", about = "Fetch USGS streamflow data and write it to Parquet")]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Fetch streamflow readings and write them to Parquet (single file or a partitioned lake)
+    Fetch(FetchArgs),
+    /// Look up site name, location, and available parameters/period of
+    /// record via USGS's combined-metadata API -- useful before deciding
+    /// what to `fetch` and how far back to backfill.
+    Sites(SitesArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct FetchArgs {
     /// Comma-separated USGS site numbers, e.g. 01646500,03339000
     #[arg(long)]
     pub sites: String,
@@ -48,6 +64,28 @@ pub struct Cli {
     /// https://api.waterdata.usgs.gov/signup/
     #[arg(long, env = "USGS_API_KEY")]
     pub api_key: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SitesArgs {
+    /// Comma-separated USGS site numbers, e.g. 01646500,03339000
+    #[arg(long)]
+    pub sites: String,
+
+    /// Restrict to one USGS parameter code, e.g. 00060 (discharge). Omit to
+    /// show every parameter/statistic series the site records.
+    #[arg(long)]
+    pub param: Option<String>,
+
+    /// USGS Water Data API key (optional; raises rate limits). Falls back to
+    /// the USGS_API_KEY environment variable.
+    #[arg(long, env = "USGS_API_KEY")]
+    pub api_key: Option<String>,
+
+    /// Also write the fetched metadata as JSON to this path (e.g. for
+    /// streamview to read and display).
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

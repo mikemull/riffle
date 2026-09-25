@@ -24,6 +24,18 @@ const OSM_STYLE = {
 };
 
 export function initMap(containerId) {
+  // The Rust side calls this as soon as its NodeRef resolves to Some, but
+  // that doesn't guarantee the element is actually attached to the live
+  // document yet (a real race we hit: MapLibre's constructor throws
+  // "Container '...' not found", which -- crossing back over the
+  // wasm_bindgen FFI boundary -- becomes an unrecoverable Rust panic and
+  // traps the whole WASM module, taking the rest of the page down with it).
+  // Retry on the next frame instead of trusting the caller's timing.
+  if (!document.getElementById(containerId)) {
+    requestAnimationFrame(() => initMap(containerId));
+    return;
+  }
+
   const map = new MaplibreMap({
     container: containerId,
     style: OSM_STYLE,
@@ -83,7 +95,13 @@ export function setSites(containerId, sitesJson) {
 
 export function onSiteClick(containerId, callback) {
   const map = maps[containerId];
-  if (!map) return;
+  if (!map) {
+    // initMap may still be waiting for its own retry (see above) --
+    // without this, a call that arrives before the map exists would
+    // silently register no click handler at all, forever.
+    requestAnimationFrame(() => onSiteClick(containerId, callback));
+    return;
+  }
 
   const register = () => {
     map.on("click", "sites-layer", (e) => {
