@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos::server_fn::codec::Json;
 
-use crate::types::{FilterState, SiteReadingRow, SiteSummary};
+use crate::types::{FilterState, SiteMetadataInfo, SiteReadingRow, SiteSummary};
 
 /// Every distinct site in the lake, with its location -- for the filter
 /// panel's checkbox list and the map's markers.
@@ -27,6 +27,34 @@ pub async fn list_sites() -> Result<Vec<SiteSummary>, ServerFnError> {
     let batches = df.collect().await.map_err(|e| ServerFnError::new(e.to_string()))?;
 
     crate::query::rows::batches_to_site_summaries(&batches).map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// USGS descriptive metadata (name, location, period of record) for the
+/// sites in the lake, read from a static JSON file `headwater sites
+/// --output` produces -- deliberately not fetched live (see the design
+/// discussion this followed: streamview stays local-first, headwater is the
+/// only thing that talks to the live USGS API). Returns an empty list,
+/// rather than an error, if the file hasn't been generated yet -- this is
+/// enhancement data, not something the rest of the UI should break without.
+#[server(endpoint = "/site_metadata")]
+pub async fn site_metadata() -> Result<Vec<SiteMetadataInfo>, ServerFnError> {
+    let path = std::env::var("SITE_METADATA_PATH")
+        .unwrap_or_else(|_| "../headwater/maumee_lake/site_metadata.json".to_string());
+
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).map_err(|e| ServerFnError::new(e.to_string())),
+        Err(e) => {
+            // Not returned to the client (this is enhancement data, not
+            // worth breaking the page over) -- but silent failure here is
+            // indistinguishable from "nothing to show", so at least log it
+            // server-side. `path` is relative to the ssr binary's current
+            // working directory, not the crate root -- a common way to
+            // land here is running the binary from somewhere other than
+            // `streamview/`.
+            eprintln!("site_metadata: could not read {path} ({e}); returning empty list");
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Query the lake with real filter criteria. See

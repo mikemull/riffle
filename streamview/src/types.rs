@@ -79,3 +79,32 @@ pub struct VerifyReport {
     pub actual_hash: String,
     pub mismatched_files: Vec<String>,
 }
+
+/// USGS descriptive metadata for a site (name, location, period of record),
+/// read from the JSON file `headwater sites --output` produces -- not
+/// fetched live, and not part of the reading-level lake data. Field-for-field
+/// mirror of `headwater::usgs::combined_metadata::SiteMetadata`/
+/// `TimeSeriesInfo`, kept as a separate local type for the same reason as
+/// `ManifestSummary`: `headwater` is an ssr-only dependency, not available
+/// to the wasm/csr build these types also need to compile for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteMetadataInfo {
+    pub site_no: String,
+    pub name: String,
+    pub state_name: Option<String>,
+    pub county_name: Option<String>,
+    pub hydrologic_unit_code: Option<String>,
+    pub drainage_area: Option<f64>,
+    pub altitude: Option<f64>,
+    pub series: Vec<SiteSeriesInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteSeriesInfo {
+    pub parameter_code: String,
+    pub parameter_name: String,
+    pub statistic_id: Option<String>,
+    pub begin: Option<String>,
+    pub end: Option<String>,
+    pub primary: Option<String>,
+}
