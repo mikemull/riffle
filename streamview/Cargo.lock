@@ -4138,6 +4138,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower-http",
  "usgs-manifest",
  "wasm-bindgen",
 ]
