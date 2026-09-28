@@ -1,0 +1,71 @@
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  color: #1a1a1a;
+}
+
+.app-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1.5rem;
+  padding: 1rem;
+}
+
+.app-main {
+  flex: 1 1 600px;
+  min-width: 0;
+}
+
+.app-sidebar {
+  flex: 0 0 320px;
+  /* Stays visible near the top-right as the main column (data table
+     especially) grows tall enough to scroll past it. */
+  position: sticky;
+  top: 1rem;
+}
+
+.publish-panel {
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.publish-panel h2 {
+  margin-top: 0;
+}
+
+.publish-panel ul {
+  list-style: none;
+  padding: 0;
+}
+
+.publish-panel li {
+  border-top: 1px solid #e0e0e0;
+  padding: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.charts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.data-table-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.5rem 0;
+}
+
+.data-table table {
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
