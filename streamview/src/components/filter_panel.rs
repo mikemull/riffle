@@ -1,14 +1,10 @@
 use leptos::prelude::*;
 
 use crate::server_fns::site_metadata;
-use crate::types::{FilterState, SiteMetadataInfo, SiteSummary};
+use crate::types::{FilterState, SiteSummary};
 
 fn date_only(timestamp: &str) -> String {
     timestamp.chars().take(10).collect()
-}
-
-fn find_metadata<'a>(list: &'a [SiteMetadataInfo], site_no: &str) -> Option<&'a SiteMetadataInfo> {
-    list.iter().find(|m| m.site_no == site_no)
 }
 
 /// Reads/writes draft filter fields locally and only pushes them into the
@@ -71,7 +67,6 @@ pub fn FilterPanel(sites: Vec<SiteSummary>, filter: RwSignal<FilterState>) -> im
                         .map(|site| {
                             let site_for_click = site.site_no.clone();
                             let site_for_check = site.site_no.clone();
-                            let site_for_label = site.site_no.clone();
                             view! {
                                 <label>
                                     <input
@@ -79,16 +74,7 @@ pub fn FilterPanel(sites: Vec<SiteSummary>, filter: RwSignal<FilterState>) -> im
                                         on:change=move |_| toggle_site(site_for_click.clone())
                                         checked=move || selected_sites.get().contains(&site_for_check)
                                     />
-                                    {move || {
-                                        let name = metadata_resource
-                                            .get()
-                                            .and_then(|r| r.ok())
-                                            .and_then(|list| find_metadata(&list, &site_for_label).map(|m| m.name.clone()));
-                                        match name {
-                                            Some(n) if !n.is_empty() => format!("{n} ({site_for_label})"),
-                                            _ => site_for_label.clone(),
-                                        }
-                                    }}
+                                    {site.site_no.clone()}
                                 </label>
                             }
                         })
