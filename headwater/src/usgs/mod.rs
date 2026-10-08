@@ -3,6 +3,7 @@ pub mod combined_metadata;
 pub mod continuous;
 pub mod daily;
 pub mod model;
+pub mod nldi;
 
 use crate::cli::Service;
 use anyhow::Result;
