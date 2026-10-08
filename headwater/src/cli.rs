@@ -16,6 +16,10 @@ pub enum Command {
     /// record via USGS's combined-metadata API -- useful before deciding
     /// what to `fetch` and how far back to backfill.
     Sites(SitesArgs),
+    /// Download each site's upstream drainage basin polygon from the USGS
+    /// Network Linked Data Index (NLDI) as GeoJSON, and check its area
+    /// against the drainage area USGS publishes for the gauge.
+    Basins(BasinsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -86,6 +90,27 @@ pub struct SitesArgs {
     /// streamview to read and display).
     #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct BasinsArgs {
+    /// Comma-separated USGS site numbers, e.g. 01646500,03339000
+    #[arg(long)]
+    pub sites: String,
+
+    /// Directory to write <site>.geojson files and a basins.csv summary into
+    #[arg(long)]
+    pub output_dir: PathBuf,
+
+    /// Fetch the full-resolution boundary instead of NLDI's simplified one
+    /// (several times larger; area differs by well under 1%)
+    #[arg(long)]
+    pub full_resolution: bool,
+
+    /// USGS Water Data API key, used for the drainage-area lookup (optional).
+    /// Falls back to the USGS_API_KEY environment variable.
+    #[arg(long, env = "USGS_API_KEY")]
+    pub api_key: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
