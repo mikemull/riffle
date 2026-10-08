@@ -8,6 +8,7 @@ dist/
 # large/binary-heavy in a way git doesn't handle well. Remove these two
 # lines if you'd rather have the lake and published datasets tracked in git.
 headwater/maumee_lake/
+headwater/basins/
 streamview/published/
 
 # Local env/secrets (e.g. USGS_API_KEY), if you ever add one
