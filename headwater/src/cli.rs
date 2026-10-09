@@ -52,7 +52,7 @@ pub struct FetchArgs {
     pub output: Option<PathBuf>,
 
     /// Output directory for a partitioned Parquet lake, laid out as
-    /// site_no=.../param_cd=.../service=.../year=.../part-*.parquet.
+    /// service=.../site_no=.../param_cd=.../year=.../part-*.parquet.
     /// Mutually exclusive with --output.
     #[arg(long, conflicts_with = "output")]
     pub output_dir: Option<PathBuf>,

@@ -12,12 +12,14 @@ struct ChartPoint {
     value: f64,
 }
 
-/// `datetime` is either a plain date ("2020-01-01", daily service) or a full
-/// ISO 8601 timestamp ("2020-01-01T00:00:00+00:00", continuous service);
-/// taking the first 10 characters handles both.
+/// `datetime` is either a plain date ("2020-01-01", daily service, plotted
+/// at midnight) or an RFC 3339 UTC timestamp ("2020-01-01T05:15:00Z",
+/// continuous service).
 fn parse_date(datetime: &str) -> Option<DateTime<Utc>> {
-    let date_part = &datetime[..10.min(datetime.len())];
-    NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
+    if let Ok(dt) = DateTime::parse_from_rfc3339(datetime) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(datetime, "%Y-%m-%d")
         .ok()
         .and_then(|d| d.and_hms_opt(0, 0, 0))
         .map(|dt| dt.and_utc())

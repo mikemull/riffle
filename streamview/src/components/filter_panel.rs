@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use crate::server_fns::site_metadata;
-use crate::types::{FilterState, SiteSummary};
+use crate::types::{FilterState, Service, SiteSummary};
 
 fn date_only(timestamp: &str) -> String {
     timestamp.chars().take(10).collect()
@@ -14,6 +14,7 @@ fn date_only(timestamp: &str) -> String {
 pub fn FilterPanel(sites: Vec<SiteSummary>, filter: RwSignal<FilterState>) -> impl IntoView {
     let initial = filter.get_untracked();
     let (selected_sites, set_selected_sites) = signal(initial.sites);
+    let (service, set_service) = signal(initial.service);
     let (param_cd, set_param_cd) = signal(initial.param_cd);
     let (start, set_start) = signal(initial.start.unwrap_or_default());
     let (end, set_end) = signal(initial.end.unwrap_or_default());
@@ -41,6 +42,7 @@ pub fn FilterPanel(sites: Vec<SiteSummary>, filter: RwSignal<FilterState>) -> im
         let end_val = end.get();
         filter.set(FilterState {
             sites: selected_sites.get(),
+            service: service.get(),
             param_cd: param_cd.get(),
             start: (!start_val.is_empty()).then_some(start_val),
             end: (!end_val.is_empty()).then_some(end_val),
@@ -81,6 +83,23 @@ pub fn FilterPanel(sites: Vec<SiteSummary>, filter: RwSignal<FilterState>) -> im
                         .collect_view()}
                 </div>
             </fieldset>
+
+            <label>
+                "Service "
+                <select
+                    prop:value=move || service.get().as_str()
+                    on:change=move |ev| {
+                        let svc = match event_target_value(&ev).as_str() {
+                            "continuous" => Service::Continuous,
+                            _ => Service::Daily,
+                        };
+                        set_service.set(svc);
+                    }
+                >
+                    <option value="daily">"Daily"</option>
+                    <option value="continuous">"Continuous"</option>
+                </select>
+            </label>
 
             <label>
                 "Parameter code "

@@ -2,10 +2,39 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// One row from the `streamflow` DataFusion table (headwater's lake), shared
-/// between the ssr query layer and the csr/wasm UI -- the whole point of
-/// keeping this in one place is that both sides use the exact same type,
-/// no separate TypeScript-ish DTO to keep in sync.
+/// Which of headwater's two USGS services to query. Each is its own
+/// DataFusion table (`daily` / `continuous`), since their `datetime` columns
+/// have different types. Mirrors `headwater::cli::Service`, kept local for
+/// the same reason as `SiteMetadataInfo` below: `headwater` is ssr-only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Service {
+    #[default]
+    Daily,
+    Continuous,
+}
+
+impl Service {
+    /// The DataFusion table name, which is also the `service=` directory
+    /// value in the lake.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Service::Daily => "daily",
+            Service::Continuous => "continuous",
+        }
+    }
+}
+
+/// One row from the `daily` or `continuous` DataFusion table (headwater's
+/// lake), shared between the ssr query layer and the csr/wasm UI -- the
+/// whole point of keeping this in one place is that both sides use the
+/// exact same type, no separate TypeScript-ish DTO to keep in sync.
+///
+/// `datetime` and `last_modified` are typed in the lake but cross to the
+/// browser as ISO 8601 strings, formatted once on the server: `datetime` is
+/// `YYYY-MM-DD` (daily) or `YYYY-MM-DDTHH:MM:SSZ` (continuous, UTC), and
+/// `last_modified` is fixed-width UTC with microseconds, so it still sorts
+/// correctly as a string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SiteReadingRow {
     pub site_no: String,
@@ -26,6 +55,8 @@ pub struct SiteReadingRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilterState {
     pub sites: Vec<String>,
+    #[serde(default)]
+    pub service: Service,
     pub param_cd: String,
     pub start: Option<String>,
     pub end: Option<String>,
@@ -35,6 +66,7 @@ impl Default for FilterState {
     fn default() -> Self {
         Self {
             sites: Vec::new(),
+            service: Service::Daily,
             param_cd: "00060".to_string(),
             start: None,
             end: None,

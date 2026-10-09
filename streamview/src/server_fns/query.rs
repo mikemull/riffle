@@ -16,10 +16,13 @@ pub async fn list_sites() -> Result<Vec<SiteSummary>, ServerFnError> {
 
     // MIN() rather than DISTINCT: a site's lat/lon should be constant across
     // its readings, but this guarantees exactly one row per site regardless.
+    // Both services' tables, since a site may have only one of them.
     let df = ctx
         .sql(
             "SELECT site_no, MIN(latitude) AS latitude, MIN(longitude) AS longitude \
-             FROM streamflow GROUP BY site_no ORDER BY site_no",
+             FROM (SELECT site_no, latitude, longitude FROM daily \
+                   UNION ALL SELECT site_no, latitude, longitude FROM continuous) \
+             GROUP BY site_no ORDER BY site_no",
         )
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;

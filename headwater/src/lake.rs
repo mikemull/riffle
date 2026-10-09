@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
-use arrow::array::StringArray;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use anyhow::{Context, Result, bail};
+use arrow::array::{Array, ArrayRef, AsArray};
+use arrow::datatypes::{
+    DataType, Date32Type, Field, Schema, SchemaRef, TimeUnit, TimestampMicrosecondType,
+};
+use chrono::NaiveDate;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 
 use crate::cli::Service;
 use crate::parquet_writer;
@@ -20,30 +24,38 @@ fn service_dir_name(service: Service) -> &'static str {
     }
 }
 
-/// The lake's four Hive partition-path levels, by exact directory-key name
-/// (`site_no=.../param_cd=.../service=.../year=...`). A DataFusion
-/// `ListingTable` over this lake must declare exactly these, by these exact
-/// names, in `ListingOptions::with_table_partition_cols` -- DataFusion
-/// requires every `key=value` path segment to name-match a declared
-/// partition column, unlike DuckDB/Polars which infer more loosely.
-pub const PARTITION_COLUMNS: [(&str, DataType); 4] = [
+/// The Hive partition-path levels *below* a service root, by exact
+/// directory-key name. The full layout is
+/// `<root>/service=.../site_no=.../param_cd=.../year=.../part-*.parquet`.
+///
+/// `service` is deliberately the top level, outside these columns: daily and
+/// continuous files have different `datetime` types, so each service is
+/// registered as its own DataFusion table rooted at [`service_root`]. (A
+/// glob can't select one service from a deeper `service=` level instead --
+/// DataFusion's `ListingTableUrl` strips `key=value` segments before glob
+/// matching.) A `ListingTable` over a service root must declare exactly
+/// these columns, by these exact names, in
+/// `ListingOptions::with_table_partition_cols` -- DataFusion requires every
+/// `key=value` path segment to name-match a declared partition column,
+/// unlike DuckDB/Polars which infer more loosely.
+pub const PARTITION_COLUMNS: [(&str, DataType); 3] = [
     ("site_no", DataType::Utf8),
     ("param_cd", DataType::Utf8),
-    ("service", DataType::Utf8),
     ("year", DataType::Utf8),
 ];
 
 /// The physical file schema for a DataFusion `ListingTable` registered over
-/// this lake: `parquet_writer::schema()` minus `site_no`/`param_cd`, which
-/// must be omitted here because they are *also* partition-path segments
-/// (see `PARTITION_COLUMNS`) -- DataFusion refuses to register a table whose
-/// declared partition columns collide with a physical column name, so the
-/// two column sets must be disjoint even though the underlying Parquet files
-/// physically contain `site_no`/`param_cd` too (kept there so single-file
-/// mode and any non-partition-aware reader still see complete rows).
-pub fn file_schema_for_listing() -> SchemaRef {
+/// one service root: `parquet_writer::schema()` minus `site_no`/`param_cd`,
+/// which must be omitted here because they are *also* partition-path
+/// segments (see `PARTITION_COLUMNS`) -- DataFusion refuses to register a
+/// table whose declared partition columns collide with a physical column
+/// name, so the two column sets must be disjoint even though the underlying
+/// Parquet files physically contain `site_no`/`param_cd` too (kept there so
+/// single-file mode and any non-partition-aware reader still see complete
+/// rows).
+pub fn file_schema_for_listing(service: Service) -> SchemaRef {
     let omit = ["site_no", "param_cd"];
-    let fields: Vec<Field> = parquet_writer::schema()
+    let fields: Vec<Field> = parquet_writer::schema(service)
         .fields()
         .iter()
         .filter(|f| !omit.contains(&f.name().as_str()))
@@ -52,16 +64,18 @@ pub fn file_schema_for_listing() -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-/// Partition directory for one site/param/service, e.g.
-/// `<root>/site_no=USGS-01646500/param_cd=00060/service=daily`
-fn partition_dir(root: &Path, site_no: &str, param_cd: &str, service: Service) -> PathBuf {
-    root.join(format!("site_no={site_no}"))
-        .join(format!("param_cd={param_cd}"))
-        .join(format!("service={}", service_dir_name(service)))
+/// Root of one service's subtree, e.g. `<root>/service=daily` -- the path a
+/// per-service `ListingTable` is registered at.
+pub fn service_root(root: &Path, service: Service) -> PathBuf {
+    root.join(format!("service={}", service_dir_name(service)))
 }
 
-fn year_of(datetime: &str) -> &str {
-    &datetime[..4.min(datetime.len())]
+/// Partition directory for one site/param/service, e.g.
+/// `<root>/service=daily/site_no=USGS-01646500/param_cd=00060`
+fn partition_dir(root: &Path, site_no: &str, param_cd: &str, service: Service) -> PathBuf {
+    service_root(root, service)
+        .join(format!("site_no={site_no}"))
+        .join(format!("param_cd={param_cd}"))
 }
 
 fn walk_parquet_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -82,49 +96,67 @@ fn walk_parquet_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Scan every Parquet file already written for this site/param/service and
-/// return the maximum `datetime` value seen. Lexicographic order matches
-/// chronological order here since every timestamp we write is the API's
-/// original ISO 8601 string. Returns `None` if the partition doesn't exist
-/// yet (first sync for this site).
-pub fn max_datetime(
+/// The date of the latest reading already written for this
+/// site/param/service (the UTC date, for continuous data), or `None` if the
+/// partition doesn't exist yet (first sync for this site).
+///
+/// Reads only each file's footer: the Parquet writer records min/max
+/// statistics per row group, so the max of the per-row-group maxes is the
+/// answer without decoding any data pages.
+pub fn max_date(
     root: &Path,
     site_no: &str,
     param_cd: &str,
     service: Service,
-) -> Result<Option<String>> {
+) -> Result<Option<NaiveDate>> {
     let dir = partition_dir(root, site_no, param_cd, service);
     if !dir.exists() {
         return Ok(None);
     }
 
-    let mut max: Option<String> = None;
+    let mut max: Option<NaiveDate> = None;
     for path in walk_parquet_files(&dir)? {
         let file =
             File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .with_context(|| format!("failed to read Parquet metadata from {}", path.display()))?
-            .build()
-            .with_context(|| format!("failed to build Parquet reader for {}", path.display()))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+            .with_context(|| format!("failed to read Parquet metadata from {}", path.display()))?;
 
-        for batch in reader {
-            let batch = batch
-                .with_context(|| format!("failed to read row group in {}", path.display()))?;
-            let col = batch
-                .column_by_name("datetime")
-                .context("Parquet file is missing a 'datetime' column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .context("'datetime' column is not the expected string type")?;
-            for v in col.iter().flatten() {
-                if max.as_deref().map(|m| v > m).unwrap_or(true) {
-                    max = Some(v.to_string());
-                }
-            }
+        let converter =
+            StatisticsConverter::try_new("datetime", builder.schema(), builder.parquet_schema())
+                .with_context(|| format!("{} has no 'datetime' column", path.display()))?;
+        let maxes = converter
+            .row_group_maxes(builder.metadata().row_groups())
+            .with_context(|| format!("failed to read statistics from {}", path.display()))?;
+        if maxes.null_count() > 0 {
+            bail!("{} has row groups without 'datetime' statistics", path.display());
+        }
+
+        for date in dates_of(&maxes)? {
+            max = max.max(Some(date));
         }
     }
 
     Ok(max)
+}
+
+/// Calendar dates from a `Date32` or UTC microsecond-timestamp array.
+fn dates_of(array: &ArrayRef) -> Result<Vec<NaiveDate>> {
+    match array.data_type() {
+        DataType::Date32 => Ok(array
+            .as_primitive::<Date32Type>()
+            .iter()
+            .flatten()
+            .map(Date32Type::to_naive_date)
+            .collect()),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            let ts = array.as_primitive::<TimestampMicrosecondType>();
+            Ok((0..ts.len())
+                .filter_map(|i| ts.value_as_datetime(i))
+                .map(|dt| dt.date())
+                .collect())
+        }
+        other => bail!("unexpected 'datetime' column type {other}"),
+    }
 }
 
 /// Write readings into the partitioned lake layout, splitting by site and
@@ -140,9 +172,9 @@ pub fn write_partitioned(
     param_cd: &str,
     service: Service,
 ) -> Result<usize> {
-    let mut groups: BTreeMap<(String, String), Vec<SiteReading>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, i32), Vec<SiteReading>> = BTreeMap::new();
     for reading in readings {
-        let year = year_of(&reading.datetime).to_string();
+        let year = reading.datetime.year();
         groups
             .entry((reading.site_no.clone(), year))
             .or_default()
@@ -158,7 +190,7 @@ pub fn write_partitioned(
     for ((site_no, year), group) in groups {
         let dir = partition_dir(root, &site_no, param_cd, service).join(format!("year={year}"));
         let path = dir.join(format!("part-{run_id}.parquet"));
-        let batch = parquet_writer::build_batch(&group)?;
+        let batch = parquet_writer::build_batch(&group, service)?;
         parquet_writer::write_batch(&batch, &path)?;
         total += group.len();
     }
@@ -172,7 +204,7 @@ mod tests {
 
     #[test]
     fn file_schema_omits_partition_columns() {
-        let schema = file_schema_for_listing();
+        let schema = file_schema_for_listing(Service::Daily);
         assert!(schema.field_with_name("site_no").is_err());
         assert!(schema.field_with_name("param_cd").is_err());
         // Everything else from parquet_writer::schema() should survive.
@@ -184,6 +216,12 @@ mod tests {
     #[test]
     fn partition_columns_match_directory_layout() {
         let names: Vec<&str> = PARTITION_COLUMNS.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, ["site_no", "param_cd", "service", "year"]);
+        assert_eq!(names, ["site_no", "param_cd", "year"]);
+    }
+
+    #[test]
+    fn service_is_the_top_partition_level() {
+        let dir = partition_dir(Path::new("lake"), "USGS-1", "00060", Service::Continuous);
+        assert_eq!(dir, Path::new("lake/service=continuous/site_no=USGS-1/param_cd=00060"));
     }
 }
