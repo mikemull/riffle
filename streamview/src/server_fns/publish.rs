@@ -79,8 +79,9 @@ pub async fn publish_dataset(filter: FilterState, dataset_name: String) -> Resul
 
     // Write to a provisional directory first -- the final directory name
     // embeds the data's content hash, which we only know once it's written.
-    let readings = crate::query::rows::to_site_readings(&rows);
-    let batch = headwater::parquet_writer::build_batch(&readings).map_err(|e| ServerFnError::new(e.to_string()))?;
+    let readings = crate::query::rows::to_site_readings(&rows).map_err(|e| ServerFnError::new(e.to_string()))?;
+    let service = crate::query::lake_table::headwater_service(filter.service);
+    let batch = headwater::parquet_writer::build_batch(&readings, service).map_err(|e| ServerFnError::new(e.to_string()))?;
 
     let provisional_dir = dataset_dir.join(format!("v{next_version}-pending"));
     std::fs::create_dir_all(&provisional_dir).map_err(|e| ServerFnError::new(e.to_string()))?;
@@ -99,7 +100,6 @@ pub async fn publish_dataset(filter: FilterState, dataset_name: String) -> Resul
     // filter -- e.g. an empty `filter.sites` means "all sites", so we record
     // the distinct sites actually present in the data instead.
     let distinct_sites: Vec<String> = rows.iter().map(|r| r.site_no.clone()).collect::<BTreeSet<_>>().into_iter().collect();
-    let distinct_services: Vec<String> = rows.iter().map(|r| r.service.clone()).collect::<BTreeSet<_>>().into_iter().collect();
     let mut approval_counts: BTreeMap<String, usize> = BTreeMap::new();
     for r in &rows {
         *approval_counts.entry(r.approval_status.clone()).or_insert(0) += 1;
@@ -107,7 +107,7 @@ pub async fn publish_dataset(filter: FilterState, dataset_name: String) -> Resul
     let max_last_modified = rows.iter().map(|r| r.last_modified.as_str()).max().unwrap_or("").to_string();
 
     let source = SourceQuery {
-        collection: distinct_services.join(","),
+        collection: filter.service.as_str().to_string(),
         sites: distinct_sites,
         param_cd: filter.param_cd.clone(),
         start: filter.start.clone().unwrap_or_default(),

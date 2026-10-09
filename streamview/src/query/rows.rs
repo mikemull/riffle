@@ -1,8 +1,10 @@
-use anyhow::{Context, Result};
-use datafusion::arrow::array::{Array, Float64Array, StringArray};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, SecondsFormat, Utc};
+use datafusion::arrow::array::{Array, AsArray, Float64Array, StringArray};
+use datafusion::arrow::datatypes::{DataType, Date32Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::arrow::record_batch::RecordBatch;
 
-use crate::types::{SiteReadingRow, SiteSummary};
+use crate::types::{Service, SiteReadingRow, SiteSummary};
 
 fn string_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
     batch
@@ -22,38 +24,69 @@ fn float_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float64Array>
         .with_context(|| format!("column '{name}' is not the expected Float64 type"))
 }
 
+/// Format a UTC instant for the wire. Fixed-width (always microseconds,
+/// always `Z`) when `micros` is set, so formatted values sort correctly as
+/// strings -- `dedup_keep_latest` relies on that for `last_modified`.
+fn format_instant(dt: DateTime<Utc>, micros: bool) -> String {
+    dt.to_rfc3339_opts(if micros { SecondsFormat::Micros } else { SecondsFormat::Secs }, true)
+}
+
+/// Format every value of a `Date32` or UTC microsecond-timestamp column as
+/// an ISO 8601 string (see `SiteReadingRow`); nulls become `None`.
+fn temporal_strings(batch: &RecordBatch, name: &str, micros: bool) -> Result<Vec<Option<String>>> {
+    let array = batch.column_by_name(name).with_context(|| format!("missing column '{name}'"))?;
+    Ok(match array.data_type() {
+        DataType::Date32 => array
+            .as_primitive::<Date32Type>()
+            .iter()
+            .map(|v| v.map(|d| Date32Type::to_naive_date(d).to_string()))
+            .collect(),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            let ts = array.as_primitive::<TimestampMicrosecondType>();
+            (0..ts.len())
+                .map(|i| {
+                    if ts.is_null(i) {
+                        return None;
+                    }
+                    ts.value_as_datetime(i).map(|dt| format_instant(dt.and_utc(), micros))
+                })
+                .collect()
+        }
+        other => bail!("column '{name}' has unexpected type {other}"),
+    })
+}
+
 /// Convert query result batches back into `SiteReadingRow`s, downcasting
-/// each named Arrow column -- the same per-column pattern headwater's
-/// `lake::max_datetime` already uses for a single column.
-pub fn batches_to_rows(batches: &[RecordBatch]) -> Result<Vec<SiteReadingRow>> {
+/// each named Arrow column. `service` is the table the batches came from;
+/// it's not a column, since each service is its own table.
+pub fn batches_to_rows(batches: &[RecordBatch], service: Service) -> Result<Vec<SiteReadingRow>> {
     let mut rows = Vec::new();
 
     for batch in batches {
         let site_no = string_col(batch, "site_no")?;
         let param_cd = string_col(batch, "param_cd")?;
-        let service = string_col(batch, "service")?;
         let year = string_col(batch, "year")?;
-        let datetime = string_col(batch, "datetime")?;
+        let datetime = temporal_strings(batch, "datetime", false)?;
         let value = float_col(batch, "value")?;
         let qualifiers = string_col(batch, "qualifiers")?;
         let latitude = float_col(batch, "latitude")?;
         let longitude = float_col(batch, "longitude")?;
         let approval_status = string_col(batch, "approval_status")?;
-        let last_modified = string_col(batch, "last_modified")?;
+        let last_modified = temporal_strings(batch, "last_modified", true)?;
 
         for i in 0..batch.num_rows() {
             rows.push(SiteReadingRow {
                 site_no: site_no.value(i).to_string(),
                 param_cd: param_cd.value(i).to_string(),
-                service: service.value(i).to_string(),
+                service: service.as_str().to_string(),
                 year: year.value(i).to_string(),
-                datetime: datetime.value(i).to_string(),
+                datetime: datetime[i].clone().context("null datetime")?,
                 value: value.value(i),
                 qualifiers: (!qualifiers.is_null(i)).then(|| qualifiers.value(i).to_string()),
                 latitude: latitude.value(i),
                 longitude: longitude.value(i),
                 approval_status: approval_status.value(i).to_string(),
-                last_modified: last_modified.value(i).to_string(),
+                last_modified: last_modified[i].clone().unwrap_or_default(),
             });
         }
     }
@@ -62,7 +95,7 @@ pub fn batches_to_rows(batches: &[RecordBatch]) -> Result<Vec<SiteReadingRow>> {
 }
 
 /// Extract a single string column across all batches, e.g. for
-/// `SELECT DISTINCT site_no FROM streamflow`.
+/// `SELECT DISTINCT site_no FROM daily`.
 pub fn single_string_column(batches: &[RecordBatch], name: &str) -> Result<Vec<String>> {
     let mut values = Vec::new();
     for batch in batches {
@@ -78,22 +111,28 @@ pub fn single_string_column(batches: &[RecordBatch], name: &str) -> Result<Vec<S
 
 /// Converts rows back into `headwater::usgs::model::SiteReading`, so a
 /// published dataset can reuse `headwater::parquet_writer` verbatim rather
-/// than re-implementing Parquet writing here. This just drops
-/// `service`/`year` (partition-derived, not part of headwater's physical
-/// file schema -- see `headwater::lake::file_schema_for_listing`) and
-/// renames nothing else.
-pub fn to_site_readings(rows: &[SiteReadingRow]) -> Vec<headwater::usgs::model::SiteReading> {
+/// than re-implementing Parquet writing here. This drops `service`/`year`
+/// (partition-derived, not part of headwater's physical file schema -- see
+/// `headwater::lake::file_schema_for_listing`) and parses the wire-format
+/// timestamp strings back into typed values.
+pub fn to_site_readings(rows: &[SiteReadingRow]) -> Result<Vec<headwater::usgs::model::SiteReading>> {
     rows.iter()
-        .map(|r| headwater::usgs::model::SiteReading {
-            site_no: r.site_no.clone(),
-            param_cd: r.param_cd.clone(),
-            datetime: r.datetime.clone(),
-            value: r.value,
-            qualifiers: r.qualifiers.clone().unwrap_or_default(),
-            latitude: r.latitude,
-            longitude: r.longitude,
-            approval_status: r.approval_status.clone(),
-            last_modified: r.last_modified.clone(),
+        .map(|r| {
+            let last_modified = (!r.last_modified.is_empty())
+                .then(|| DateTime::parse_from_rfc3339(&r.last_modified).map(|dt| dt.with_timezone(&Utc)))
+                .transpose()
+                .with_context(|| format!("invalid last_modified '{}'", r.last_modified))?;
+            Ok(headwater::usgs::model::SiteReading {
+                site_no: r.site_no.clone(),
+                param_cd: r.param_cd.clone(),
+                datetime: headwater::usgs::model::ReadingTime::parse(&r.datetime)?,
+                value: r.value,
+                qualifiers: r.qualifiers.clone().unwrap_or_default(),
+                latitude: r.latitude,
+                longitude: r.longitude,
+                approval_status: r.approval_status.clone(),
+                last_modified,
+            })
         })
         .collect()
 }
@@ -123,9 +162,9 @@ pub fn batches_to_site_summaries(batches: &[RecordBatch]) -> Result<Vec<SiteSumm
 /// This exists because `headwater`'s incremental sync deliberately re-fetches
 /// the boundary day on every resume (see headwater's `lake.rs`/`main.rs`),
 /// which leaves genuine duplicate rows on disk for that day. Lexicographic
-/// string comparison matches chronological order here since every timestamp
-/// we store is the API's original ISO 8601 string (the same assumption
-/// headwater's own `lake::max_datetime` already relies on).
+/// string comparison matches chronological order here because
+/// `batches_to_rows` formats both `datetime` and `last_modified` as
+/// fixed-width UTC ISO 8601 strings.
 pub fn dedup_keep_latest(rows: Vec<SiteReadingRow>) -> Vec<SiteReadingRow> {
     use std::collections::HashMap;
 

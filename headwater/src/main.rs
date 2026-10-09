@@ -53,7 +53,7 @@ fn run_single_file(args: &cli::FetchArgs) -> Result<()> {
     )?;
     let row_count = readings.len();
 
-    parquet_writer::write(&readings, output)?;
+    parquet_writer::write(&readings, args.service, output)?;
 
     println!("wrote {row_count} rows to {}", output.display());
 
@@ -68,12 +68,12 @@ fn run_lake(args: &cli::FetchArgs, dir: &Path) -> Result<()> {
         let normalized_site = usgs::client::normalize_site_id(site);
 
         let start = if args.incremental {
-            match lake::max_datetime(dir, &normalized_site, &args.param, args.service)? {
+            match lake::max_date(dir, &normalized_site, &args.param, args.service)? {
                 // Resume from the start of the day of the last known
                 // reading, so late-arriving data within that day isn't
                 // missed (this re-fetches -- and duplicates -- that day's
                 // existing rows; see lake::write_partitioned).
-                Some(max) => max[..10.min(max.len())].to_string(),
+                Some(max) => max.to_string(),
                 None => args.start.clone().with_context(|| {
                     format!("no existing data for site {site}; provide --start for its initial sync")
                 })?,

@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use super::model::SiteReading;
+use super::model::{ReadingTime, SiteReading};
 
 const BASE_URL: &str = "https://api.waterdata.usgs.gov/ogcapi/v1/collections";
 
@@ -138,16 +139,29 @@ pub fn fetch_collection(
             let longitude = feature.geometry.coordinates.first().copied().unwrap_or(0.0);
             let latitude = feature.geometry.coordinates.get(1).copied().unwrap_or(0.0);
 
+            // Fail loudly on an unparseable timestamp rather than writing it
+            // to the lake: it would mean the API's format changed.
+            let datetime = ReadingTime::parse(&p.time)?;
+            let last_modified = p
+                .last_modified
+                .as_deref()
+                .map(|s| {
+                    DateTime::parse_from_rfc3339(s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .with_context(|| format!("unrecognized last_modified '{s}'"))
+                })
+                .transpose()?;
+
             readings.push(SiteReading {
                 site_no: p.monitoring_location_id,
                 param_cd: p.parameter_code,
-                datetime: p.time,
+                datetime,
                 value,
                 qualifiers: p.qualifier.unwrap_or_default(),
                 latitude,
                 longitude,
                 approval_status: p.approval_status.unwrap_or_default(),
-                last_modified: p.last_modified.unwrap_or_default(),
+                last_modified,
             });
         }
 
